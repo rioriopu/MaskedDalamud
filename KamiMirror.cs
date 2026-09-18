@@ -8,6 +8,9 @@ using TerraFX.Interop.DirectX;
 using Dalamud.Interface.GameFonts;
 using Dalamud.Interface.ManagedFontAtlas;
 
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
@@ -291,6 +294,7 @@ internal sealed unsafe class KamiMirror : IDisposable
         _active = false;
         _suspended = false;
         lock (_gate) _items.Clear();
+        ClearReapplyListeners();
         RestoreAll();
         LastNodeCount = LastDrawCount = LastQuadCount = 0;
         _addonSummary = "";
@@ -501,6 +505,91 @@ internal sealed unsafe class KamiMirror : IDisposable
             t->TextColor.A = tv.Text;
             t->EdgeColor.A = tv.Edge;
             _dimmedText.Remove(key);
+        }
+    }
+
+    // ===================== アドオン更新後の再適用 =====================
+    //
+    // 我々が隠すのは Framework.Update (= ゲームの UI 更新より前) なので、
+    // **毎フレーム自分でアルファを書き直すプラグイン**が相手だと必ず上書きされる。
+    //
+    //   SimpleTweaks/Tweaks/UiAdjustment/CastBarAdjustments.cs
+    //     private void CastBarOnUpdateDetour(AddonCastBar* castBar, void* a2) {
+    //         castBarOnUpdateHook.Original(castBar, a2);
+    //         UpdateCastBar(castBar);      // ← ここで Color.A を毎回書く
+    //     }
+    //
+    // 結果、配信側には出たままになり、更新が走らないフレームだけ消えて**ちらつく**。
+    // そこで対象ノードを含むアドオンの **PostUpdate** (そのアドオンの更新が終わった直後) で
+    // もう一度アルファを 0 にする。描画はこの後なので、これで最終的な値が我々のものになる。
+
+    /// <summary>再適用の監視を張っているアドオン名。</summary>
+    private readonly HashSet<string> _reapplyAddons = new();
+
+    /// <summary>今フレームに再適用が必要と分かったアドオン名。</summary>
+    private readonly HashSet<string> _needReapply = new();
+
+    /// <summary>監視対象を今フレームの結果へ合わせる。増減したぶんだけ登録/解除する。</summary>
+    private void SyncReapplyListeners()
+    {
+        foreach (var name in _reapplyAddons.Except(_needReapply).ToList())
+        {
+            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
+            _reapplyAddons.Remove(name);
+        }
+        foreach (var name in _needReapply.Except(_reapplyAddons).ToList())
+        {
+            try { Plugin.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
+            _reapplyAddons.Add(name);
+        }
+    }
+
+    /// <summary>監視を全部外す。停止時と破棄時に必ず通す。</summary>
+    private void ClearReapplyListeners()
+    {
+        foreach (var name in _reapplyAddons)
+        {
+            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
+        }
+        _reapplyAddons.Clear();
+        _needReapply.Clear();
+    }
+
+    private void OnAddonPostUpdate(AddonEvent type, AddonArgs args)
+    {
+        if (!_active) return;
+        try
+        {
+            var addon = (AtkUnitBase*)args.Addon.Address;
+            if (addon == null || addon->RootNode == null) return;
+            ReapplyDim(addon->RootNode, 0);
+        }
+        catch { }
+    }
+
+    /// <summary>このアドオンの中で、我々が隠しているノードのアルファを 0 に戻す。
+    /// 自分のコールバックの中なのでアドオンは生きており、木を辿るのは安全。</summary>
+    private void ReapplyDim(AtkResNode* node, int depth)
+    {
+        if (node == null || depth > 24) return;
+
+        var key = (nint)node;
+        if (_dimmed.ContainsKey(key)) node->Color.A = 0;
+        if (node->Type == NodeType.Text && _dimmedText.ContainsKey(key))
+        {
+            var t = (AtkTextNode*)node;
+            t->TextColor.A = 0;
+            t->EdgeColor.A = 0;
+        }
+
+        for (var c = node->ChildNode; c != null; c = c->PrevSiblingNode)
+            ReapplyDim(c, depth + 1);
+
+        if (node->Type == NodeType.Component)
+        {
+            var comp = ((AtkComponentNode*)node)->Component;
+            if (comp != null && comp->UldManager.RootNode != null)
+                ReapplyDim(comp->UldManager.RootNode, depth + 1);
         }
     }
 
@@ -773,6 +862,7 @@ internal sealed unsafe class KamiMirror : IDisposable
         EnsureKtkTable();
         _seen.Clear();
         _byAddon.Clear();
+        _needReapply.Clear();
         int nodeCount = 0;
         // 走査が最後まで通ったときだけ退避情報を掃除する。途中で抜けた場合に掃除すると
         // 「元のアルファを忘れたまま隠れっぱなし」になり得るため。
@@ -828,6 +918,10 @@ internal sealed unsafe class KamiMirror : IDisposable
                     // ルート自身から辿るので、ルートのスケールは Walk の中で掛かる。
                     // ここで addon->Scale を足すと二重になる。
                     Walk(root, name, ref nodeCount, depth: 0, Ctx.Root(1f, 1f, 1f));
+
+                    // 相乗り先はアドオンの更新でアルファを書き直されることがある
+                    // (SimpleTweaks など)。更新直後に再適用するため監視対象にする。
+                    if (nodeCount > before) _needReapply.Add(name);
                 }
                 if (nodeCount > before)
                 {
@@ -846,6 +940,8 @@ internal sealed unsafe class KamiMirror : IDisposable
             if (walkOk) { try { PruneDimmed(); } catch { } }
             Monitor.Exit(_gate);
         }
+        // 走査が通ったときだけ監視対象を更新する (途中で抜けた結果で外すと再適用が止まる)。
+        if (walkOk) { try { SyncReapplyListeners(); } catch { } }
         LastNodeCount = nodeCount;
         LastSkippedCount = _skipped_n;
         if (_dumpAll)
@@ -1547,6 +1643,7 @@ internal sealed unsafe class KamiMirror : IDisposable
 
     public void Dispose()
     {
+        try { ClearReapplyListeners(); } catch { }
         try { if (_active) { _active = false; RestoreAll(); } } catch { }
         foreach (var f in _fonts.Values) { try { f?.Dispose(); } catch { } }
         _fonts.Clear();

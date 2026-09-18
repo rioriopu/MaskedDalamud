@@ -24,6 +24,7 @@ public partial class Plugin : IDalamudPlugin
     [PluginService] public static IDtrBar DtrBar { get; private set; } = null!;
     [PluginService] public static IGameGui GameGui { get; private set; } = null!;
     [PluginService] public static IGameInteropProvider GameInterop { get; private set; } = null!;
+    [PluginService] public static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     public string Name => "MaskedDalamud";
     public const string CommandName = "/maskedalamud";
