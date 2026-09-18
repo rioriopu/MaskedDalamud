@@ -379,11 +379,13 @@ internal sealed unsafe class KamiMirror : IDisposable
     {
         public float Alpha, ScaleX, ScaleY;
         public static Ctx Root(float a, float sx, float sy) => new() { Alpha = a, ScaleX = sx, ScaleY = sy };
-        public Ctx With(AtkResNode* n, float alpha) => new()
+        /// <summary>子へ積む。スケールは**隠す前の値**を渡すこと
+        /// (スケール 0 で隠している間、ノードから読むと倍率を見失う)。</summary>
+        public Ctx With(float alpha, float sx, float sy) => new()
         {
             Alpha = alpha,
-            ScaleX = ScaleX * (n->ScaleX != 0 ? n->ScaleX : 1f),
-            ScaleY = ScaleY * (n->ScaleY != 0 ? n->ScaleY : 1f),
+            ScaleX = ScaleX * (sx != 0 ? sx : 1f),
+            ScaleY = ScaleY * (sy != 0 ? sy : 1f),
         };
     }
 
@@ -468,6 +470,7 @@ internal sealed unsafe class KamiMirror : IDisposable
         }
         if (_dimmed.ContainsKey(key)) node->Color.A = 0;
 
+
         if (node->Type == NodeType.Text)
         {
             var t = (AtkTextNode*)node;
@@ -535,11 +538,13 @@ internal sealed unsafe class KamiMirror : IDisposable
         foreach (var name in _reapplyAddons.Except(_needReapply).ToList())
         {
             try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
+            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PreDraw, name, OnAddonPreDraw); } catch { }
             _reapplyAddons.Remove(name);
         }
         foreach (var name in _needReapply.Except(_reapplyAddons).ToList())
         {
             try { Plugin.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
+            try { Plugin.AddonLifecycle.RegisterListener(AddonEvent.PreDraw, name, OnAddonPreDraw); } catch { }
             _reapplyAddons.Add(name);
         }
     }
@@ -550,22 +555,68 @@ internal sealed unsafe class KamiMirror : IDisposable
         foreach (var name in _reapplyAddons)
         {
             try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
+            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PreDraw, name, OnAddonPreDraw); } catch { }
         }
         _reapplyAddons.Clear();
         _needReapply.Clear();
     }
 
-    private void OnAddonPostUpdate(AddonEvent type, AddonArgs args)
+    private void OnAddonPostUpdate(AddonEvent type, AddonArgs args) => ForEachAddonRoot(args, n => ReapplyDim((AtkResNode*)n, 0));
+
+    /// <summary>描画に入る直前。ここで初めてスケールを 0 にする。
+    /// 座標計算 (UI 更新) は既に終わっているので、手元の再現位置は正しいまま消せる。</summary>
+    private void OnAddonPreDraw(AddonEvent type, AddonArgs args) => ForEachAddonRoot(args, n => HideForDraw(n, 0));
+
+    private void ForEachAddonRoot(AddonArgs args, Action<nint> fn)
     {
         if (!_active) return;
         try
         {
             var addon = (AtkUnitBase*)args.Addon.Address;
             if (addon == null || addon->RootNode == null) return;
-            ReapplyDim(addon->RootNode, 0);
+            fn((nint)addon->RootNode);
         }
         catch { }
     }
+
+    /// <summary>描画直前の非表示。
+    ///
+    /// Atk は親→子の色伝播を **UI 更新のときに計算し、結果を `*_2` フィールドへ書き戻す**。
+    /// 実際に描画へ使われるのはこの実効値なので、更新が終わった後に `Color.A` を
+    /// 書いてもその場では効かない (次の更新まで反映されない)。これが
+    /// 「毎フレーム書き直してくる相手に対して点滅する」正体だった。
+    ///
+    /// ここでは実効値である <c>Alpha_2</c> を直接 0 にする。描画の直前なので
+    /// 誰にも上書きされず、座標計算も終わっているため手元の再現位置もずれない。</summary>
+    private void HideForDraw(nint root, int depth)
+    {
+        var node = (AtkResNode*)root;
+        if (node == null || depth > 24) return;
+
+        var key = (nint)node;
+        if (_dimmed.ContainsKey(key)) node->Color.A = 0;
+        if (_dimmed.ContainsKey(key)) node->Alpha_2 = 0;
+        if (node->Type == NodeType.Text && _dimmedText.ContainsKey(key))
+        {
+            var t = (AtkTextNode*)node;
+            t->TextColor.A = 0;
+            t->EdgeColor.A = 0;
+        }
+
+        for (var c = node->ChildNode; c != null; c = c->PrevSiblingNode)
+            HideForDraw((nint)c, depth + 1);
+        if (node->Type == NodeType.Component)
+        {
+            var comp = (AtkComponentNode*)node;
+            if (comp->Component != null)
+            {
+                var ul = &comp->Component->UldManager;
+                for (var i = 0; i < ul->NodeListCount; i++)
+                    HideForDraw((nint)ul->NodeList[i], depth + 1);
+            }
+        }
+    }
+
 
     /// <summary>このアドオンの中で、我々が隠しているノードのアルファを 0 に戻す。
     /// 自分のコールバックの中なのでアドオンは生きており、木を辿るのは安全。</summary>
@@ -613,6 +664,43 @@ internal sealed unsafe class KamiMirror : IDisposable
         }
     }
 
+    /// <summary>既に隠しているノードを「隠したまま」保持する。
+    ///
+    /// 見えていないノードは描き直す必要が無いので捕捉はしないが、手放してしまうと
+    /// <see cref="PruneDimmed"/> が退避情報ごと捨てて元へ戻してしまう。
+    /// すると次に見え始めたとき、こちらが隠し直すまでの 1 フレームだけ素通しになる。
+    /// 生存確認済みとして印を付け直し、値も書き直しておく。</summary>
+    private void HoldTree(AtkResNode* node, int depth)
+    {
+        if (node == null || depth > 24) return;
+        if (_dimmed.Count == 0 && _dimmedText.Count == 0) return;
+
+        var key = (nint)node;
+        bool held = false;
+        if (_dimmed.ContainsKey(key)) { node->Color.A = 0; held = true; }
+        if (node->Type == NodeType.Text && _dimmedText.ContainsKey(key))
+        {
+            var t = (AtkTextNode*)node;
+            t->TextColor.A = 0;
+            t->EdgeColor.A = 0;
+            held = true;
+        }
+        if (held) _seen.Add(key);
+
+        for (var c = node->ChildNode; c != null; c = c->PrevSiblingNode)
+            HoldTree(c, depth + 1);
+        if (node->Type == NodeType.Component)
+        {
+            var comp = (AtkComponentNode*)node;
+            if (comp->Component != null)
+            {
+                var ul = &comp->Component->UldManager;
+                for (var i = 0; i < ul->NodeListCount; i++)
+                    HoldTree(ul->NodeList[i], depth + 1);
+            }
+        }
+    }
+
     /// <summary>枝全体を透明化する (ゲーム既存アドオンに相乗りしたノード用)。</summary>
     private void DimTree(AtkResNode* node, int depth)
     {
@@ -636,6 +724,9 @@ internal sealed unsafe class KamiMirror : IDisposable
     /// (0 のまま再現すると何も映らないため)。</summary>
     private byte OriginalAlpha(AtkResNode* node)
         => _dimmed.TryGetValue((nint)node, out var a) ? a : node->Color.A;
+
+    /// <summary>再現描画に使う元のスケール。</summary>
+    private static (float X, float Y) OriginalScale(AtkResNode* node) => (node->ScaleX, node->ScaleY);
 
     /// <summary>テキストノードの「元の」文字色/縁色アルファ。透明化済みなら退避値を返す。</summary>
     private (byte Text, byte Edge) OriginalTextAlpha(AtkTextNode* t)
@@ -764,6 +855,8 @@ internal sealed unsafe class KamiMirror : IDisposable
         if (overlay || node->NodeId >= NodeIdBase)
         {
             if (node->Color.A == 0) { node->Color.A = 255; n++; }
+            // 実効アルファを 0 にして隠しているものも戻す。
+            if (node->Alpha_2 == 0) { node->Alpha_2 = 255; n++; }
             if (node->Type == NodeType.Text)
             {
                 var t = (AtkTextNode*)node;
@@ -880,7 +973,13 @@ internal sealed unsafe class KamiMirror : IDisposable
             {
                 var addon = list->Entries[i].Value;
                 if (addon == null || addon->RootNode == null) continue;
-                if (!addon->IsVisible) continue;
+                if (!addon->IsVisible)
+                {
+                    // アドオンごと消えている間も、隠していたものは保持する
+                    // (手放すと再表示の 1 フレーム目が素通しになる)。
+                    HoldTree(addon->RootNode, 0);
+                    continue;
+                }
 
                 var name = addon->NameString;
                 bool isOverlayAddon = Array.IndexOf(OverlayAddonNames, name) >= 0;
@@ -972,7 +1071,14 @@ internal sealed unsafe class KamiMirror : IDisposable
             // この判定はマスク中も正しく機能し続ける。
             bool visible;
             try { visible = node->IsVisible(); } catch { return; }
-            if (!visible) return;
+            if (!visible)
+            {
+                // 見えていない間も、既に隠しているものは**隠したまま保持する**。
+                // ここで手放すと退避情報が掃除で捨てられ、再び見え始めてから次に隠すまでの
+                // 1 フレームだけ素通しになる (詠唱終了の瞬間に配信へ一瞬出ていた原因)。
+                HoldTree(node, 0);
+                return;
+            }
 
             // 所有プラグインを特定し、選別が有効ならここで振り分ける。
             // KTK のノード表に載らないものは、アドオン名 → NodeId の順に引く。
@@ -999,7 +1105,8 @@ internal sealed unsafe class KamiMirror : IDisposable
         }
 
         // ここは対象外のノード。アルファとスケールを子へ積む (色はゲームが継承済み)。
-        var ctx = parent.With(node, parent.Alpha * (OriginalAlpha(node) / 255f));
+        var os = OriginalScale(node);
+        var ctx = parent.With(parent.Alpha * (OriginalAlpha(node) / 255f), os.X, os.Y);
 
         for (var c = node->ChildNode; c != null; c = c->PrevSiblingNode)
             Walk(c, addon, ref count, depth + 1, ctx, force, hide);
@@ -1040,7 +1147,8 @@ internal sealed unsafe class KamiMirror : IDisposable
             if (!_plugin.cfg.kamiIgnoreVisible) return;
         }
 
-        var ctx = parent.With(node, parent.Alpha * (OriginalAlpha(node) / 255f));
+        var os = OriginalScale(node);
+        var ctx = parent.With(parent.Alpha * (OriginalAlpha(node) / 255f), os.X, os.Y);
 
         switch (node->Type)
         {
