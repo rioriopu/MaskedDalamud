@@ -1,0 +1,16 @@
+# ビルド生成物
+bin/
+obj/
+
+# 調査で吐いたもの (ゲームから採取したシェーダやダンプ)
+shaders/
+*.cso
+*.i64
+*.asm
+
+# エディタ / OS
+.vs/
+.idea/
+*.user
+Thumbs.db
+desktop.ini

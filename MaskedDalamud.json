@@ -1,0 +1,21 @@
+{
+    "Author": "Estell",
+    "Name": "Masked Dalamud",
+    "InternalName": "MaskedDalamud",
+    "Punchline": "プラグイン UI だけを配信から隠す (ゲーム画面は配信に残る)",
+    "Description": "OBS / Discord などの配信・録画キャプチャから、Dalamud プラグインの UI だけを隠します。ゲーム画面はそのまま配信に残り、手元では今までどおり UI が見え操作もできます。\n\n■ 仕組み\nプラグイン UI を専用のキャプチャ除外オーバーレイへ退避し、最終的にキャプチャへ渡る映像から UI をピクセル単位で取り除きます。Dalamud のレンダラには手を加えないため安定して動作します。OBS のゲームキャプチャ、Discord の画面共有いずれにも対応します。\n\n■ コマンド\n/md — トグル (主機能)\n/md on | off | toggle — 適用 / 解除 / トグル\n/md config — 設定画面\n/md scrub on|off — 別名\n\n■ ホットキー\nCtrl + Shift + L (設定で無効化可能)\n\n■ 起動時自動\n設定で「起動時に自動で有効化する」をオンにすると、FFXIV 起動 / プラグイン読込時に自動で有効化します。\n\n■ サーバー情報バー表示\nDalamud のサーバー情報バーに「● Masked (方式名)」を表示します。左クリックでキャプチャ除外の ON/OFF、右クリックで設定画面を開けます。\n\n■ KamiToolKit 製ネイティブ UI の非表示 (新機能)\nJobBars などが使う KamiToolKit の UI は、ゲームの UI レイヤーへ直接描かれるため従来のキャプチャ除外では隠せませんでした。本機能はゲームと同じ合成規則で UI を描き直し、配信から隠しつつ手元には表示します。設定の「試験機能」タブから有効化でき、プラグイン単位で対象を選べます。\n※ 対象の UI はクリック操作ができなくなります (表示専用 UI 向け)。\n\n■ 補助機能\n設定画面「予備 (WDA)」タブから、FFXIV ウィンドウ全体をキャプチャ除外する WDA 方式も利用できます (画面ごと配信から消える方式・推奨が使えない環境向けの保険)。\n\n■ 注意\n- 2 アカウント以上の多重起動でも自分のクライアントだけに作用します\n- WDA 非対応の古い Windows では効果がありません\n- ゲームのワールド上へ直接描画するもの (Splatoon の VFX 出力など) は、仕組み上キャプチャから隠せません。\n- NVIDIA 純正リプレイ (ShadowPlay / インスタントリプレイ) を使う場合は、ビデオ設定からデスクトップキャプチャーをオフにしてください。オンのままだと「デスクトップキャプチャが妨げられています」と表示されインスタントリプレイ等が使用できません (キャプチャ除外オーバーレイが保護コンテンツ扱いになるため)。ゲーム内キャプチャ・OBS / Discord には影響しません。",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/rioriopu/PrivateReleaseRepo",
+    "Tags": [
+        "streaming",
+        "obs",
+        "discord",
+        "privacy",
+        "recording",
+        "wda"
+    ],
+    "AcceptsFeedback": true,
+    "DalamudApiLevel": 15,
+    "AssemblyVersion": "2.1.0.0",
+    "IconUrl": "https://raw.githubusercontent.com/rioriopu/PrivateReleaseRepo/main/icons/MaskedDalamud.png"
+}
