@@ -64,6 +64,20 @@ internal sealed unsafe class KamiMirror : IDisposable
         ["BMR_Overlay_Back"] = "BossModReborn",
     };
 
+    /// <summary>SimpleTweaks が自作ノードへ振る NodeId の範囲 (SimpleTweaksPlugin/Utility/CustomNodes.cs)。
+    ///
+    ///   SimpleTweaksNodeBase = 0x53540000;   // 固定 ID の基点
+    ///   private static uint _nextId = 0x53541000;  // 動的 ID。16 ずつ増える
+    ///
+    /// SimpleTweaks は専用オーバーレイを作らず、ゲームのアドオン (_CastBar など) へ
+    /// 直接ノードを足すため、アドオン名からは所有者を引けない。上位 16bit で振り分ける。</summary>
+    private const uint SimpleTweaksNodeMask = 0xFFFF0000;
+    private const uint SimpleTweaksNodeBase = 0x53540000;
+
+    /// <summary>NodeId の範囲から所有プラグインを引く。該当しなければ null。</summary>
+    private static string? OwnerByNodeId(uint nodeId)
+        => (nodeId & SimpleTweaksNodeMask) == SimpleTweaksNodeBase ? "SimpleTweaksPlugin" : null;
+
     private readonly Plugin _plugin;
 
     /// <summary>1 フレーム分の描画スナップショット (Framework スレッドで作り描画スレッドで使う)。</summary>
@@ -865,9 +879,10 @@ internal sealed unsafe class KamiMirror : IDisposable
             if (!visible) return;
 
             // 所有プラグインを特定し、選別が有効ならここで振り分ける。
-            // KTK のノード表に載らないものは、アドオン名から引く。
+            // KTK のノード表に載らないものは、アドオン名 → NodeId の順に引く。
             var owner = BranchOwner(node)
                      ?? (AddonOwners.TryGetValue(addon, out var byAddon) ? byAddon : null)
+                     ?? OwnerByNodeId(node->NodeId)
                      ?? "(不明)";
             _owners[owner] = _owners.TryGetValue(owner, out var oc) ? oc + 1 : 1;
             var targets = _plugin.cfg.kamiTargetPlugins;
