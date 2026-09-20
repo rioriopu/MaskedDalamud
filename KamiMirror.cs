@@ -1622,12 +1622,24 @@ internal sealed unsafe class KamiMirror : IDisposable
             else { tw = actW; th = actH; }
 
             // ゲームの「高解像度時の UI サイズ設定」が 100% より大きいと、
-            // ゲームは末尾が _hr1 の**2 倍解像度テクスチャ**を読み込む。
-            // 一方 AtkUldPart の U/V/Width/Height は**等倍基準のまま**なので、
-            // 実テクスチャの寸法で割ると UV が半分になり、左上 1/4 を拡大表示してしまう
-            // (アイコンが潰れて見える現象の正体)。等倍換算した寸法で割る。
-            tw /= hr;
-            th /= hr;
+            // ゲームは末尾が _hr1 の**2 倍解像度テクスチャ**を読み込むことがある。
+            // このとき AtkUldPart の U/V/Width/Height が**等倍基準のまま**なら、
+            // 実テクスチャの寸法で割ると UV が半分になり、左上 1/4 を拡大表示してしまう。
+            //
+            // ただしパーツ座標が実寸基準で作られていることもある
+            // (プラグインが KamiToolKit 等で自前にパーツを組む場合)。
+            // その場合に割ると逆に壊れるので、**等倍換算した面にパーツが収まるときだけ**
+            // 補正する。収まらない = 実寸基準とみなして触らない。
+            if (hr > 1f)
+            {
+                float baseW = tw / hr, baseH = th / hr;
+                if (part->U + part->Width <= baseW + 1f && part->V + part->Height <= baseH + 1f)
+                {
+                    tw = baseW;
+                    th = baseH;
+                }
+                else hr = 1f;   // 補正しなかったことを診断へ残す
+            }
 
             if (tw > 0 && th > 0)
             {
