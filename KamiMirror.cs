@@ -139,6 +139,44 @@ internal sealed unsafe class KamiMirror : IDisposable
     private readonly List<string> _skipped = new();
     public IReadOnlyList<string> SkippedDiagnostics => _skipped;
     public int LastSkippedCount { get; private set; }
+    // ── スナップショットが持つテクスチャの寿命 ──
+    //
+    // TextureSrv はゲームが持つ ID3D11ShaderResourceView の生ポインタ。
+    // Framework スレッドで拾い、**後のフレームの描画スレッドで使う**ため、
+    // その間にゲームがテクスチャを解放/作り直すと解放済みメモリを読むことになる。
+    // アイコンの読み込みや入れ替えが走ると壊れた絵が出る (ホットバーで多発との報告)。
+    // 参照カウントを自分で 1 つ握り、スナップショットを捨てるときに返す。
+
+    /// <summary>IUnknown::AddRef (vtable[1])。</summary>
+    private static void ComAddRef(nint p)
+    {
+        if (p == 0) return;
+        var vtbl = *(nint**)p;
+        ((delegate* unmanaged[Stdcall]<nint, uint>)vtbl[1])(p);
+    }
+
+    /// <summary>IUnknown::Release (vtable[2])。</summary>
+    private static void ComRelease(nint p)
+    {
+        if (p == 0) return;
+        var vtbl = *(nint**)p;
+        ((delegate* unmanaged[Stdcall]<nint, uint>)vtbl[2])(p);
+    }
+
+    /// <summary>スナップショットへ 1 件積む。テクスチャは参照を 1 つ握ってから入れる。</summary>
+    private void AddItem(in Item item)
+    {
+        ComAddRef(item.TextureSrv);
+        _items.Add(item);
+    }
+
+    /// <summary>スナップショットを捨てる。握っていた参照は必ず返す。</summary>
+    private void ClearItems()
+    {
+        foreach (var it in _items) ComRelease(it.TextureSrv);
+        _items.Clear();
+    }
+
     /// <summary>_items は Framework スレッドで作り、描画スレッド (Before/Draw) で読むので保護する。</summary>
     private readonly object _gate = new();
 
@@ -293,7 +331,7 @@ internal sealed unsafe class KamiMirror : IDisposable
         if (!_active) return;
         _active = false;
         _suspended = false;
-        lock (_gate) _items.Clear();
+        lock (_gate) ClearItems();
         ClearReapplyListeners();
         RestoreAll();
         LastNodeCount = LastDrawCount = LastQuadCount = 0;
@@ -533,29 +571,40 @@ internal sealed unsafe class KamiMirror : IDisposable
     private readonly HashSet<string> _needReapply = new();
 
     /// <summary>監視対象を今フレームの結果へ合わせる。増減したぶんだけ登録/解除する。</summary>
+    /// <summary>監視を張ったか。アドオン名ごとに登録すると取りこぼしが出るため、
+    /// **名前を指定しない 1 本の監視**にして、対象かどうかは中で見る。</summary>
+    private bool _listenerArmed;
+
     private void SyncReapplyListeners()
     {
-        foreach (var name in _reapplyAddons.Except(_needReapply).ToList())
+        // 対象のアドオン名を入れ替える (実際に隠したものだけ)。
+        _reapplyAddons.Clear();
+        foreach (var n in _needReapply) _reapplyAddons.Add(n);
+
+        bool want = _reapplyAddons.Count > 0;
+        if (want == _listenerArmed) return;
+
+        if (want)
         {
-            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
-            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PreDraw, name, OnAddonPreDraw); } catch { }
-            _reapplyAddons.Remove(name);
+            try
+            {
+                Plugin.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, OnAddonPostUpdate);
+                Plugin.AddonLifecycle.RegisterListener(AddonEvent.PreDraw, OnAddonPreDraw);
+                _listenerArmed = true;
+            }
+            catch (Exception ex) { LastError = $"再適用の監視に失敗: {ex.Message}"; }
         }
-        foreach (var name in _needReapply.Except(_reapplyAddons).ToList())
-        {
-            try { Plugin.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
-            try { Plugin.AddonLifecycle.RegisterListener(AddonEvent.PreDraw, name, OnAddonPreDraw); } catch { }
-            _reapplyAddons.Add(name);
-        }
+        else ClearReapplyListeners();
     }
 
     /// <summary>監視を全部外す。停止時と破棄時に必ず通す。</summary>
     private void ClearReapplyListeners()
     {
-        foreach (var name in _reapplyAddons)
+        if (_listenerArmed)
         {
-            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, name, OnAddonPostUpdate); } catch { }
-            try { Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PreDraw, name, OnAddonPreDraw); } catch { }
+            try { Plugin.AddonLifecycle.UnregisterListener(OnAddonPostUpdate); } catch { }
+            try { Plugin.AddonLifecycle.UnregisterListener(OnAddonPreDraw); } catch { }
+            _listenerArmed = false;
         }
         _reapplyAddons.Clear();
         _needReapply.Clear();
@@ -572,6 +621,8 @@ internal sealed unsafe class KamiMirror : IDisposable
         if (!_active) return;
         try
         {
+            // 隠すものがあるアドオンだけを見る (全アドオンを毎フレーム辿らないため)。
+            if (!_reapplyAddons.Contains(args.AddonName)) return;
             var addon = (AtkUnitBase*)args.Addon.Address;
             if (addon == null || addon->RootNode == null) return;
             fn((nint)addon->RootNode);
@@ -880,7 +931,7 @@ internal sealed unsafe class KamiMirror : IDisposable
 
     /// <summary>[調査] 診断内容を全件ファイルへ書き出す。画面の一覧は件数上限があるため、
     /// 解析にはこちらを使う。設定値も併記して状況ごと再現できるようにする。</summary>
-    private string WriteDiagFile()
+    private string WriteDiagFile(bool suspended = false)
     {
         var dir = System.IO.Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "diag");
         System.IO.Directory.CreateDirectory(dir);
@@ -890,6 +941,15 @@ internal sealed unsafe class KamiMirror : IDisposable
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"# Masked Dalamud KamiMirror 診断  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine();
+        if (suspended)
+        {
+            sb.AppendLine("## ⚠ キャプチャ除外が停止中です");
+            sb.AppendLine("  ミラーは待機しているため、ノードの検出・非表示は行っていません。");
+            sb.AppendLine("  基本タブの「開始」を押してから、もう一度出力してください。");
+            sb.AppendLine("  (停止中のまま調べたい場合は、試験機能タブの");
+            sb.AppendLine("   「キャプチャ除外が停止中でもミラーを動かす」を ON にしてください)");
+            sb.AppendLine();
+        }
         sb.AppendLine("## 設定");
         sb.AppendLine($"  ミラー有効        = {_active}");
         sb.AppendLine($"  独立オーバーレイのみ = {c.kamiOverlayAddonsOnly}");
@@ -901,6 +961,7 @@ internal sealed unsafe class KamiMirror : IDisposable
         sb.AppendLine($"  素のテクセル描画   = {c.kamiRawTexel}");
         sb.AppendLine($"  可視判定を無視     = {c.kamiIgnoreVisible}");
         sb.AppendLine($"  対象プラグイン     = {(c.kamiTargetPlugins.Count == 0 ? "(すべて)" : string.Join(", ", c.kamiTargetPlugins))}");
+        sb.AppendLine($"  描画直前の再適用   = {(_listenerArmed ? "監視中" : "停止")} 対象アドオン: {(_reapplyAddons.Count == 0 ? "(なし)" : string.Join(", ", _reapplyAddons))}");
         sb.AppendLine();
         sb.AppendLine("## 検出した所有プラグイン (枝数)");
         foreach (var kv in _owners.OrderByDescending(k => k.Value))
@@ -914,9 +975,69 @@ internal sealed unsafe class KamiMirror : IDisposable
         sb.AppendLine($"## 可視判定で除外 ({_skipped_n} 件 / 記録 {_skipped.Count} 件)");
         foreach (var l in _skipped) sb.AppendLine("  " + l);
 
+        sb.AppendLine();
+        sb.AppendLine("## プラグイン製ノードの全捜索 (可視・対象の別を問わず)");
+        try { ScanPluginNodes(sb); } catch (Exception ex) { sb.AppendLine($"  捜索で例外: {ex.Message}"); }
+
         System.IO.File.WriteAllText(path, sb.ToString());
         Plugin.Log.Info($"[KamiMirror] 診断を出力: {path}");
         return path;
+    }
+
+    /// <summary>[調査] 読み込み済みアドオンを全部辿り、プラグインが足したノードを列挙する。
+    ///
+    /// 通常の走査は「アドオンが可視」「ノードが可視」で絞るため、
+    /// 対象が見えていないタイミングでは何も残らず、**検出できていないのか
+    /// たまたま出ていないだけなのか**が区別できない。ここでは絞り込みを一切かけない。</summary>
+    private void ScanPluginNodes(System.Text.StringBuilder sb)
+    {
+        var stage = AtkStage.Instance();
+        var mgr = stage != null ? stage->RaptureAtkUnitManager : null;
+        if (mgr == null) { sb.AppendLine("  (UnitManager が取れません)"); return; }
+
+        int found = 0;
+        var list = &mgr->AtkUnitManager.AllLoadedUnitsList;
+        for (var i = 0; i < list->Count; i++)
+        {
+            var addon = list->Entries[i].Value;
+            if (addon == null || addon->RootNode == null) continue;
+            ScanTree(addon->RootNode, addon->NameString, addon->IsVisible, 0, sb, ref found);
+        }
+        if (found == 0) sb.AppendLine("  (見つかりませんでした)");
+        else sb.AppendLine($"  合計 {found} 件");
+    }
+
+    private void ScanTree(AtkResNode* node, string addon, bool addonVisible, int depth,
+                          System.Text.StringBuilder sb, ref int found)
+    {
+        if (node == null || depth > 24 || found > 200) return;
+
+        if (node->NodeId >= NodeIdBase)
+        {
+            bool vis;
+            try { vis = node->IsVisible(); } catch { vis = false; }
+            var owner = BranchOwner(node)
+                     ?? (AddonOwners.TryGetValue(addon, out var byAddon) ? byAddon : null)
+                     ?? OwnerByNodeId(node->NodeId)
+                     ?? "(不明)";
+            sb.AppendLine($"  [{addon}] #{node->NodeId} (0x{node->NodeId:X}) {node->Type}"
+                        + $" 所有={owner} ノード可視={vis} アドオン可視={addonVisible}"
+                        + $" a={node->Color.A} 位置={(int)node->ScreenX},{(int)node->ScreenY}");
+            found++;
+        }
+
+        for (var c = node->ChildNode; c != null; c = c->PrevSiblingNode)
+            ScanTree(c, addon, addonVisible, depth + 1, sb, ref found);
+        if (node->Type == NodeType.Component)
+        {
+            var comp = (AtkComponentNode*)node;
+            if (comp->Component != null)
+            {
+                var ul = &comp->Component->UldManager;
+                for (var i = 0; i < ul->NodeListCount; i++)
+                    ScanTree(ul->NodeList[i], addon, addonVisible, depth + 1, sb, ref found);
+            }
+        }
     }
 
     // ============================== 収集 + 透過 ==============================
@@ -936,17 +1057,25 @@ internal sealed unsafe class KamiMirror : IDisposable
             if (!_suspended)
             {
                 _suspended = true;
-                lock (_gate) _items.Clear();
+                lock (_gate) ClearItems();
                 RestoreAll();
                 LastNodeCount = LastDrawCount = LastQuadCount = 0;
                 _addonSummary = "(キャプチャ除外が停止中のため待機)";
+            }
+            // 停止中でも診断の要求には応える。黙って何も出さないと、
+            // 「ボタンを押したのにファイルが増えない」理由が分からなくなる。
+            if (DumpDiagRequested)
+            {
+                DumpDiagRequested = false;
+                try { DumpDiagResult = WriteDiagFile(suspended: true); }
+                catch (Exception ex) { DumpDiagResult = $"出力失敗: {ex.Message}"; }
             }
             return;
         }
         _suspended = false;
 
         Monitor.Enter(_gate);
-        _items.Clear();
+        ClearItems();
         _diag.Clear();
         _skipped.Clear();
         _skipped_n = 0;
@@ -1272,7 +1401,7 @@ internal sealed unsafe class KamiMirror : IDisposable
             }
         }
 
-        _items.Add(item);
+        AddItem(item);
         if (_diag.Count < (_dumpAll ? 20000 : 48))
         {
             // 実際に読めている合成値を出す。元の見た目と合わないときの切り分けはここが起点。
@@ -1398,7 +1527,7 @@ internal sealed unsafe class KamiMirror : IDisposable
                     U0 = 0, V0 = 0, U1 = 1, V1 = 1,
                 };
                 item.TextureSrv = GetSrv(cn->PartsList, (uint)part, ref item);
-                if (item.TextureSrv != 0) _items.Add(item);
+                if (item.TextureSrv != 0) AddItem(item);
             }
             x += cw;
         }
@@ -1753,6 +1882,7 @@ internal sealed unsafe class KamiMirror : IDisposable
     {
         try { ClearReapplyListeners(); } catch { }
         try { if (_active) { _active = false; RestoreAll(); } } catch { }
+        try { lock (_gate) ClearItems(); } catch { }
         foreach (var f in _fonts.Values) { try { f?.Dispose(); } catch { } }
         _fonts.Clear();
     }
