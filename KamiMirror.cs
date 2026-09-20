@@ -1550,30 +1550,35 @@ internal sealed unsafe class KamiMirror : IDisposable
     }
 
     /// <summary>パーツリストからテクスチャの SRV と UV を取り出す。取得できなければ 0。</summary>
-    /// <summary>テクスチャが等倍の何倍で用意されているかを返す (1 or 2)。
+    /// <summary>テクスチャの素性。ファイル名から判る性質をまとめて持つ。
     ///
-    /// 高解像度 UI では末尾 <c>_hr1</c> のテクスチャが使われる。毎フレーム文字列を
-    /// 作ると重いので、テクスチャのハンドルごとに一度だけ調べて覚えておく。</summary>
-    private static readonly Dictionary<nint, float> _hiResCache = new();
+    /// 毎フレーム文字列を作ると重いので、ハンドルごとに一度だけ調べて覚えておく。</summary>
+    private readonly record struct TexKind(float HiRes, bool IsIcon);
 
-    private static float HiResScaleOf(AtkTextureResource* res)
+    private static readonly Dictionary<nint, TexKind> _texKind = new();
+
+    private static TexKind KindOf(AtkTextureResource* res)
     {
         var h = res->TexFileResourceHandle;
-        if (h == null) return 1f;
+        if (h == null) return new TexKind(1f, false);
 
         var key = (nint)h;
-        if (_hiResCache.TryGetValue(key, out var cached)) return cached;
+        if (_texKind.TryGetValue(key, out var cached)) return cached;
 
-        float scale = 1f;
+        var kind = new TexKind(1f, false);
         try
         {
             var name = h->ResourceHandle.FileName.ToString();
-            if (name.Contains("_hr1", StringComparison.OrdinalIgnoreCase)) scale = 2f;
+            // 高解像度 UI では末尾 _hr1 のテクスチャが使われる。
+            float hr = name.Contains("_hr1", StringComparison.OrdinalIgnoreCase) ? 2f : 1f;
+            // ui/icon/ 以下は 1 枚 1 絵のアイコン。ui/uld/ 以下は複数の絵を詰めた板。
+            bool icon = name.Contains("ui/icon/", StringComparison.OrdinalIgnoreCase);
+            kind = new TexKind(hr, icon);
         }
         catch { }
 
-        if (_hiResCache.Count < 4096) _hiResCache[key] = scale;
-        return scale;
+        if (_texKind.Count < 4096) _texKind[key] = kind;
+        return kind;
     }
 
     private static nint GetSrv(AtkUldPartsList* parts, uint partId, ref Item item)
@@ -1590,7 +1595,8 @@ internal sealed unsafe class KamiMirror : IDisposable
             // 通常の UI 部品は前者だが、BossModReborn の 3D 投影のように
             // レンダーターゲットを直接貼るものは後者なので、両方を見る。
             FFXIVClientStructs.FFXIV.Client.Graphics.Kernel.Texture* kernel = null;
-            float hr = 1f;   // テクスチャが等倍の何倍で用意されているか
+            float hr = 1f;     // テクスチャが等倍の何倍で用意されているか
+            bool isIcon = false;
             if (asset->AtkTexture.TextureType == TextureType.KernelTexture)
                 kernel = asset->AtkTexture.KernelTexture;
             else
@@ -1599,7 +1605,9 @@ internal sealed unsafe class KamiMirror : IDisposable
                 if (res != null)
                 {
                     kernel = res->KernelTextureObject;
-                    hr = HiResScaleOf(res);
+                    var kind = KindOf(res);
+                    hr = kind.HiRes;
+                    isIcon = kind.IsIcon;
                 }
             }
             if (kernel == null) return 0;
@@ -1665,8 +1673,8 @@ internal sealed unsafe class KamiMirror : IDisposable
                 float pw = MathF.Min(part->Width, MathF.Max(1f, tw - part->U));
                 float ph = MathF.Min(part->Height, MathF.Max(1f, th - part->V));
 
-                // パーツが 1 つだけ・原点から・テクスチャより小さい場合は、
-                // **テクスチャ全体を指している**とみなす。
+                // **アイコン**で、パーツが 1 つだけ・原点から・テクスチャより小さい場合は、
+                // テクスチャ全体を指しているとみなす。
                 //
                 // KamiToolKit はノードを作るときにパーツの寸法を決め、後から
                 // テクスチャを差し替えても更新しない。ゲームはテクスチャ全体を
@@ -1674,9 +1682,10 @@ internal sealed unsafe class KamiMirror : IDisposable
                 // (実測: 素 71x71 のノードで part=32x32 / テクスチャ 128x128 →
                 //  左上 1/16 だけを拡大表示していた)。
                 //
-                // アトラス (1 枚に複数の絵) は U/V が 0 以外か、パーツが複数ある。
-                // ここは「1 枚絵を丸ごと貼る」形に限っているので巻き込まない。
-                if (parts->PartCount == 1 && part->U == 0 && part->V == 0
+                // **アイコンに限る**のが要点。ui/uld/ の板 (チェックボックス等) は
+                // 1 枚に複数の絵が入っており、パーツ 1 つでも一部を正しく切り出している。
+                // ここを巻き込むと設定画面の部品が塗り潰しになる (実際に起きた)。
+                if (isIcon && parts->PartCount == 1 && part->U == 0 && part->V == 0
                     && (part->Width < tw || part->Height < th))
                 {
                     pw = tw;
@@ -1693,7 +1702,8 @@ internal sealed unsafe class KamiMirror : IDisposable
                 item.PartW = pw; item.PartH = ph;
                 // どの寸法で割ったのかを完全に残す。ここが合っていないと UV がずれる。
                 item.NomTex = $"中身{actW:F0}x{actH:F0}/確保{allocW:F0}x{allocH:F0}/実寸{rawW:F0}x{rawH:F0}"
-                            + (hr > 1f ? "/hr1" : "") + (corrected ? "/補正済" : "/無補正");
+                            + (hr > 1f ? "/hr1" : "") + (isIcon ? "/icon" : "/uld")
+                            + (corrected ? "/補正済" : "/無補正");
             }
             return srv;
         }
