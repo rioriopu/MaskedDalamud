@@ -1630,15 +1630,28 @@ internal sealed unsafe class KamiMirror : IDisposable
             // (プラグインが KamiToolKit 等で自前にパーツを組む場合)。
             // その場合に割ると逆に壊れるので、**等倍換算した面にパーツが収まるときだけ**
             // 補正する。収まらない = 実寸基準とみなして触らない。
+            float rawW = tw, rawH = th;   // 補正前の実寸 (診断用)
+            bool corrected = false;
             if (hr > 1f)
             {
                 float baseW = tw / hr, baseH = th / hr;
-                if (part->U + part->Width <= baseW + 1f && part->V + part->Height <= baseH + 1f)
+
+                // パーツが等倍基準か実寸基準かを、**大きさの桁で**見分ける。
+                //
+                // 「等倍換算の面にぴったり収まるか」で判定してはいけない。
+                // アイコンのパーツは**テクスチャより一回り大きい**ことがあり
+                // (実測: part=44x46 に対しテクスチャ 40x40)、収まらない=実寸基準と
+                // 誤判定して補正をやめてしまう (JobBars のホットバーで再発した)。
+                // 一方、実寸基準で組まれたものは**倍のオーダー**で大きいので、
+                // 25% ぶんの余裕を見れば両者は充分に分かれる。
+                const float Slack = 1.25f;
+                if (part->Width <= baseW * Slack && part->Height <= baseH * Slack)
                 {
                     tw = baseW;
                     th = baseH;
+                    corrected = true;
                 }
-                else hr = 1f;   // 補正しなかったことを診断へ残す
+                else hr = 1f;   // 実寸基準とみなして触らない (診断にも残る)
             }
 
             if (tw > 0 && th > 0)
@@ -1652,6 +1665,24 @@ internal sealed unsafe class KamiMirror : IDisposable
                 float pw = MathF.Min(part->Width, MathF.Max(1f, tw - part->U));
                 float ph = MathF.Min(part->Height, MathF.Max(1f, th - part->V));
 
+                // パーツが 1 つだけ・原点から・テクスチャより小さい場合は、
+                // **テクスチャ全体を指している**とみなす。
+                //
+                // KamiToolKit はノードを作るときにパーツの寸法を決め、後から
+                // テクスチャを差し替えても更新しない。ゲームはテクスチャ全体を
+                // 描いているので、パーツの寸法どおりに切り出すと一部しか映らない
+                // (実測: 素 71x71 のノードで part=32x32 / テクスチャ 128x128 →
+                //  左上 1/16 だけを拡大表示していた)。
+                //
+                // アトラス (1 枚に複数の絵) は U/V が 0 以外か、パーツが複数ある。
+                // ここは「1 枚絵を丸ごと貼る」形に限っているので巻き込まない。
+                if (parts->PartCount == 1 && part->U == 0 && part->V == 0
+                    && (part->Width < tw || part->Height < th))
+                {
+                    pw = tw;
+                    ph = th;
+                }
+
                 item.U0 = part->U / tw;
                 item.V0 = part->V / th;
                 item.U1 = (part->U + pw) / tw;
@@ -1660,7 +1691,9 @@ internal sealed unsafe class KamiMirror : IDisposable
                 item.TexW = tw; item.TexH = th;
                 item.PartU = part->U; item.PartV = part->V;
                 item.PartW = pw; item.PartH = ph;
-                item.NomTex = $"中身{actW:F0}x{actH:F0}/確保{allocW:F0}x{allocH:F0}" + (hr > 1f ? $"/高解像度x{hr:F0}" : "");
+                // どの寸法で割ったのかを完全に残す。ここが合っていないと UV がずれる。
+                item.NomTex = $"中身{actW:F0}x{actH:F0}/確保{allocW:F0}x{allocH:F0}/実寸{rawW:F0}x{rawH:F0}"
+                            + (hr > 1f ? "/hr1" : "") + (corrected ? "/補正済" : "/無補正");
             }
             return srv;
         }

@@ -570,10 +570,74 @@ public partial class ConfigWindow : EstellUtils.UI.Windowing.EuWindow, IDisposab
     }
 
     /// <summary>試験機能 (危険) タブ。</summary>
+    /// <summary>[調査] VFX の観測。NyaDraw / Splatoon の VFX 描画を隠せるかの見極めに使う。
+    ///
+    /// ここでやるのは**記録だけ**。ゲームには一切干渉しない。
+    /// 対象プラグインを ON にした状態と OFF にした状態で 2 回書き出し、
+    /// 差分に出たものが「プラグインが作った VFX」になる。
+    /// それが安定して言い当てられるなら、隠して描き直す道が開ける。</summary>
+    private void DrawVfxProbe()
+    {
+        EUi.TextColored("VFX の出どころ調査", new Vector4(0.6f, 1f, 0.8f, 1f));
+        EUi.Muted("ゲームに作られた VFX を記録します。記録するだけで、表示は変わりません。", wrap: true);
+
+        var probe = plugin.vfxProbe;
+        bool on = probe is { IsActive: true };
+
+        using (EUi.HStack())
+        {
+            if (EUi.Button(on ? "観測を止める##vfxProbeToggle" : "観測を始める##vfxProbeToggle",
+                           on ? ButtonStyle.Danger : ButtonStyle.Primary, width: SizeSpec.Px(140)))
+            {
+                if (on) probe!.Disable();
+                else
+                {
+                    plugin.vfxProbe ??= new VfxProbe();
+                    plugin.vfxProbe.Enable();
+                }
+            }
+
+            if (probe != null)
+                EUi.Label($"{probe.TotalCreated} 件 / {probe.DistinctPaths} 種");
+        }
+
+        if (probe == null)
+        {
+            EUi.Muted("未開始");
+            return;
+        }
+
+        EUi.Muted(probe.Status);
+
+        using (EUi.HStack())
+        {
+            if (EUi.Button("記録を消す##vfxProbeClear", width: SizeSpec.Px(120)))
+                probe.Clear();
+            EUi.Tip("対象プラグインを切り替える前に押して、記録を分けます。");
+
+            if (EUi.Button("ON 側を保存##vfxProbeDumpOn", width: SizeSpec.Px(140)))
+                _vfxDumpResult = probe.Dump("plugin_on");
+
+            if (EUi.Button("OFF 側を保存##vfxProbeDumpOff", width: SizeSpec.Px(140)))
+                _vfxDumpResult = probe.Dump("plugin_off");
+        }
+
+        if (!string.IsNullOrEmpty(_vfxDumpResult))
+            EUi.Muted($"出力: {_vfxDumpResult}", wrap: true);
+
+        EUi.Muted("手順: 記録を消す → 対象を ON にして数分遊ぶ → 「ON 側を保存」 → "
+                + "記録を消す → 対象を OFF にして同じ場所で遊ぶ → 「OFF 側を保存」", wrap: true);
+    }
+
+    private string _vfxDumpResult = "";
+
     private void DrawExperimentalTab()
     {
         // 移行前と同じ赤文字。Note の枠囲みは見た目が変わりすぎるため使わない。
         EUi.WrapColored("⚠ 試験機能です。問題が出たら OFF に戻してください。", new Vector4(1f, 0.4f, 0.4f, 1f));
+        EUi.Separator();
+
+        DrawVfxProbe();
         EUi.Separator();
 
         EUi.TextColored("排他フルスクリーン → 強制ボーダレス化", new Vector4(1f, 0.8f, 0.3f, 1f));

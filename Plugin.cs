@@ -82,6 +82,10 @@ public partial class Plugin : IDalamudPlugin
     /// <summary>[調査] ゲームのピクセルシェーダ バイトコード採取。</summary>
     internal ShaderCapture? shaderCapture;
 
+    /// <summary>[調査] VFX が誰に作られたか見分けられるかを確かめる観測専用フック。
+    /// 既定では作らない。試験機能タブから明示的に開始したときだけ生成する。</summary>
+    internal VfxProbe? vfxProbe;
+
     /// <summary>[調査] D3D デバイスを解決してシェーダ採取フックを仕掛ける。</summary>
     internal bool TryEnableShaderCapture()
     {
@@ -550,6 +554,7 @@ public partial class Plugin : IDalamudPlugin
         try { shaderCapture?.Dispose(); shaderCapture = null; } catch { }
         try { mirrorPreview?.Dispose(); mirrorPreview = null; } catch { }
         try { kamiMirror?.Dispose(); kamiMirror = null; } catch { }
+        try { vfxProbe?.Dispose(); vfxProbe = null; } catch { }
 
         // [診断] ResizeBuffers イベント購読解除。
         try { resizeProbe?.Dispose(); resizeProbe = null; } catch { }
