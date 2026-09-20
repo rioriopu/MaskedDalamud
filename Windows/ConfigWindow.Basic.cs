@@ -301,6 +301,29 @@ public partial class ConfigWindow
 
         if (cfg.kamiMirrorEnabled && plugin.kamiMirror is { } m && !string.IsNullOrEmpty(m.LastError))
             EUi.WrapColored($"警告: {m.LastError}", new Vector4(1f, 0.5f, 0.4f, 1f));
+
+        DrawMirrorInspectSwitch();
+    }
+
+    /// <summary>不具合を調べるための切り替え。カードの外へ出して、
+    /// 「普段は触らないもの」と分かる位置に置く。</summary>
+    private void DrawMirrorInspectSwitch()
+    {
+        EUi.WrapColored("不具合調査用です。通常の利用では触る必要はありません。",
+                        new Vector4(1f, 0.8f, 0.4f, 1f));
+
+        var kar = cfg.kamiMirrorAlwaysRun;
+        if (EUi.Toggle("キャプチャ除外が停止中でもミラーを動かす##kamiAlwaysRun", ref kar))
+        {
+            cfg.kamiMirrorAlwaysRun = kar;
+            cfg.Save();
+        }
+        EUi.Tip("キャプチャ除外を切ったまま『配信側に出る絵』を画面に出します。\n"
+              + "見た目の確認や診断の出力に使います。");
+
+        if (cfg.kamiMirrorAlwaysRun && !plugin.CaptureScrubActive)
+            EUi.WrapColored("検証モード稼働中 — 配信保護は働いていません。",
+                            new Vector4(1f, 0.6f, 0.3f, 1f));
     }
 
     /// <summary>対象プラグイン 1 行ぶん。トグルの実体は kamiTargetPlugins への出し入れで、

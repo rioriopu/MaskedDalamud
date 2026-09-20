@@ -112,6 +112,11 @@ internal sealed unsafe class KamiMirror : IDisposable
         // 9 分割 (NineGrid) 用。Slice=true のとき四辺の余白を保ったまま中央だけを伸ばす。
         public bool Slice;
         public float SliceL, SliceR, SliceT, SliceB;   // パーツ内のピクセル単位マージン
+
+        /// <summary>祖先ぶんまで積んだ拡大率。9 分割のマージンを画面上の大きさへ
+        /// 直すのに使う (マージンはテクスチャのピクセル数なので、そのままでは
+        /// 「高解像度時の UI サイズ設定」を上げたときに四隅だけ小さいままになる)。</summary>
+        public float ScaleX, ScaleY;
         public float PartW, PartH;                     // パーツの実ピクセルサイズ
         public float TexW, TexH;                       // テクスチャ全体の実ピクセルサイズ
         public float PartU, PartV;                     // パーツ左上のテクスチャ座標 (ピクセル)
@@ -1326,6 +1331,7 @@ internal sealed unsafe class KamiMirror : IDisposable
         var item = new Item
         {
             X = node->ScreenX, Y = node->ScreenY, W = w, H = h,
+            ScaleX = ctx.ScaleX, ScaleY = ctx.ScaleY,
             Color = col == 0 ? 0xFFFFFFFF : col,
             U0 = 0, V0 = 0, U1 = 1, V1 = 1,
             MR = tint.MR, MG = tint.MG, MB = tint.MB, MA = tint.MA,
@@ -1372,9 +1378,15 @@ internal sealed unsafe class KamiMirror : IDisposable
                 item.WrapMode = img->WrapMode;
                 item.TextureSrv = GetSrv(img->PartsList, img->PartId, ref item);
                 // Tile 指定でノードがパーツより大きい場合は UV を伸ばして繰り返す。
+                //
+                // **比べるのはノードの素の大きさとパーツの大きさ。**
+                // w / h は画面上の大きさ (祖先ぶんのスケールを掛けた後) なので、
+                // ゲームの「高解像度時の UI サイズ設定」を上げるとその倍率がそのまま
+                // 繰り返し回数に化け、アイコンが引き伸ばされて潰れる
+                // (100% では倍率が 1 前後のため気付かなかった)。
                 if (item.WrapMode == 1 && item.TextureSrv != 0 && item.PartW > 0 && item.PartH > 0)
                 {
-                    float rx = w / item.PartW, ry = h / item.PartH;
+                    float rx = node->Width / item.PartW, ry = node->Height / item.PartH;
                     if (rx > 1.001f) item.U1 = item.U0 + (item.U1 - item.U0) * rx;
                     if (ry > 1.001f) item.V1 = item.V0 + (item.V1 - item.V0) * ry;
                     item.Tile = rx > 1.001f || ry > 1.001f;
@@ -1667,9 +1679,11 @@ internal sealed unsafe class KamiMirror : IDisposable
             return;
         }
 
-        // マージンが描画サイズを超える場合は縮めて破綻を防ぐ。
-        float l = MathF.Max(0, it.SliceL), r = MathF.Max(0, it.SliceR);
-        float t = MathF.Max(0, it.SliceT), b = MathF.Max(0, it.SliceB);
+        // マージンはテクスチャのピクセル数なので、画面上の大きさへ直してから使う。
+        // 直さないと UI 拡大時に四隅だけ元の大きさのままになり、枠が崩れる。
+        float sx = it.ScaleX > 0 ? it.ScaleX : 1f, sy = it.ScaleY > 0 ? it.ScaleY : 1f;
+        float l = MathF.Max(0, it.SliceL) * sx, r = MathF.Max(0, it.SliceR) * sx;
+        float t = MathF.Max(0, it.SliceT) * sy, b = MathF.Max(0, it.SliceB) * sy;
         if (l + r > it.W) { float k = it.W / (l + r); l *= k; r *= k; }
         if (t + b > it.H) { float k = it.H / (t + b); t *= k; b *= k; }
 

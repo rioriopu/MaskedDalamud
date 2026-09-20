@@ -760,15 +760,7 @@ public partial class ConfigWindow : EstellUtils.UI.Windowing.EuWindow, IDisposab
             {
                 EUi.WrapColored("不具合調査用です。通常の利用では触る必要はありません。", new Vector4(1f, 0.8f, 0.4f, 1f));
 
-                var kar = cfg.kamiMirrorAlwaysRun;
-                if (EUi.Checkbox("キャプチャ除外が停止中でもミラーを動かす##kamiAlwaysRun", ref kar))
-                {
-                    cfg.kamiMirrorAlwaysRun = kar;
-                    cfg.Save();
-                }
-                EUi.Tip("キャプチャ除外を切ったまま『配信側に出る絵』を画面に出します。");
-                if (cfg.kamiMirrorAlwaysRun && !plugin.CaptureScrubActive)
-                    EUi.WrapColored("検証モード稼働中 — 配信保護は働いていません。", new Vector4(1f, 0.6f, 0.3f, 1f));
+                EUi.Muted("「キャプチャ除外が停止中でもミラーを動かす」は基本タブへ移動しました。", wrap: true);
 
                 var iv = cfg.kamiIgnoreVisible;
                 if (EUi.Checkbox("可視判定を無視して全部描く##kamiIgnoreVis", ref iv))
