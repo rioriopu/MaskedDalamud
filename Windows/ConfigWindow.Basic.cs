@@ -343,8 +343,9 @@ public partial class ConfigWindow
                 "JobBars" => "ゲージやアイコンを、ゲームと同じ描き方で手元にだけ再現します。",
                 "BossModReborn" => "『Enable projecting radar into the 3D world』で 3D 世界へ投影される"
                                  + "レーダーを隠します。レーダーのウィンドウ表示は方式側で隠れます。",
-                "SimpleTweaksPlugin" => "SimpleTweaks がゲームの UI へ足したノード"
-                                      + "(スライドキャストマーカー・所持ギル表示・コンボタイマー等) を隠します。\n"
+                "SimpleTweaksPlugin" => "SimpleTweaks の『滑り撃ちキャストバー』"
+                                      + "(スライドキャストマーカー) を隠します。\n"
+                                      + "※ 動作を確認できているのはこの項目だけです。\n"
                                       + "※ ゲーム本体の UI の位置や大きさを変えるだけの項目"
                                       + "(キャストバーの位置調整など) は、ゲームの UI そのものなので隠せません。",
                 _ => "このプラグインがゲームの UI レイヤーへ描いている分を隠します (未検証)。",
