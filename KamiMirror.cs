@@ -1538,6 +1538,32 @@ internal sealed unsafe class KamiMirror : IDisposable
     }
 
     /// <summary>パーツリストからテクスチャの SRV と UV を取り出す。取得できなければ 0。</summary>
+    /// <summary>テクスチャが等倍の何倍で用意されているかを返す (1 or 2)。
+    ///
+    /// 高解像度 UI では末尾 <c>_hr1</c> のテクスチャが使われる。毎フレーム文字列を
+    /// 作ると重いので、テクスチャのハンドルごとに一度だけ調べて覚えておく。</summary>
+    private static readonly Dictionary<nint, float> _hiResCache = new();
+
+    private static float HiResScaleOf(AtkTextureResource* res)
+    {
+        var h = res->TexFileResourceHandle;
+        if (h == null) return 1f;
+
+        var key = (nint)h;
+        if (_hiResCache.TryGetValue(key, out var cached)) return cached;
+
+        float scale = 1f;
+        try
+        {
+            var name = h->ResourceHandle.FileName.ToString();
+            if (name.Contains("_hr1", StringComparison.OrdinalIgnoreCase)) scale = 2f;
+        }
+        catch { }
+
+        if (_hiResCache.Count < 4096) _hiResCache[key] = scale;
+        return scale;
+    }
+
     private static nint GetSrv(AtkUldPartsList* parts, uint partId, ref Item item)
     {
         try
@@ -1552,12 +1578,17 @@ internal sealed unsafe class KamiMirror : IDisposable
             // 通常の UI 部品は前者だが、BossModReborn の 3D 投影のように
             // レンダーターゲットを直接貼るものは後者なので、両方を見る。
             FFXIVClientStructs.FFXIV.Client.Graphics.Kernel.Texture* kernel = null;
+            float hr = 1f;   // テクスチャが等倍の何倍で用意されているか
             if (asset->AtkTexture.TextureType == TextureType.KernelTexture)
                 kernel = asset->AtkTexture.KernelTexture;
             else
             {
                 var res = asset->AtkTexture.Resource;
-                if (res != null) kernel = res->KernelTextureObject;
+                if (res != null)
+                {
+                    kernel = res->KernelTextureObject;
+                    hr = HiResScaleOf(res);
+                }
             }
             if (kernel == null) return 0;
             var srv = (nint)kernel->D3D11ShaderResourceView;
@@ -1578,6 +1609,14 @@ internal sealed unsafe class KamiMirror : IDisposable
             else if (allocW > 0 && allocH > 0) { tw = allocW; th = allocH; }
             else { tw = actW; th = actH; }
 
+            // ゲームの「高解像度時の UI サイズ設定」が 100% より大きいと、
+            // ゲームは末尾が _hr1 の**2 倍解像度テクスチャ**を読み込む。
+            // 一方 AtkUldPart の U/V/Width/Height は**等倍基準のまま**なので、
+            // 実テクスチャの寸法で割ると UV が半分になり、左上 1/4 を拡大表示してしまう
+            // (アイコンが潰れて見える現象の正体)。等倍換算した寸法で割る。
+            tw /= hr;
+            th /= hr;
+
             if (tw > 0 && th > 0)
             {
                 // パーツ矩形がテクスチャの外へはみ出すことがある。
@@ -1597,7 +1636,7 @@ internal sealed unsafe class KamiMirror : IDisposable
                 item.TexW = tw; item.TexH = th;
                 item.PartU = part->U; item.PartV = part->V;
                 item.PartW = pw; item.PartH = ph;
-                item.NomTex = $"中身{actW:F0}x{actH:F0}/確保{allocW:F0}x{allocH:F0}";
+                item.NomTex = $"中身{actW:F0}x{actH:F0}/確保{allocW:F0}x{allocH:F0}" + (hr > 1f ? $"/高解像度x{hr:F0}" : "");
             }
             return srv;
         }
