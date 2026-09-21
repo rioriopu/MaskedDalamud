@@ -46,7 +46,7 @@ public partial class ConfigWindow : EstellUtils.UI.Windowing.EuWindow, IDisposab
           + "FFXIV ウィンドウ全体を隠します。");
 
         // タブはラベルを先に宣言する形。条件付きのタブは配列を組み立ててから渡す。
-        var labels = new List<string> { "基本", "設定" };
+        var labels = new List<string> { "基本", "推奨プラグイン", "設定" };
         if (cfg.showWdaTab) labels.Add("予備 (WDA) / 注意");
         if (cfg.debugEnabled) labels.Add("試験機能 (危険)");
         labels.Add("ご支援");
@@ -68,6 +68,7 @@ public partial class ConfigWindow : EstellUtils.UI.Windowing.EuWindow, IDisposab
                 DrawJobBarsSimple();
             }
         }
+        else if (tabs.IsSelected("推奨プラグイン")) DrawRecommendedTab();
         else if (tabs.IsSelected("設定")) DrawDisplaySettings();
         else if (tabs.IsSelected("予備 (WDA) / 注意")) DrawWdaTab();
         else if (tabs.IsSelected("試験機能 (危険)")) DrawExperimentalTab();
