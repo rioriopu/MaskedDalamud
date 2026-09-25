@@ -46,6 +46,8 @@ public partial class ConfigWindow
                                       : new Vector4(1f, 0.45f, 0.45f, 1f));
         }
 
+        // 他所の成果を紹介しているので、作者名は説明より前に出す。
+        EUi.TextColored($"開発者: {e.Author}様", new Vector4(0.75f, 0.8f, 0.9f, 1f));
         EUi.Paragraph(e.Summary, EUi.Colors.TextMuted);
 
         if (installed)

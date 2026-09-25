@@ -21,13 +21,15 @@ namespace MaskedDalamud;
 internal static class PluginRecommender
 {
     /// <summary>推奨する 1 件。</summary>
-    internal sealed record Entry(string InternalName, string Title, string Summary, string RepoUrl);
+    /// <param name="Author">作者名。他所の成果を紹介する以上、必ず名前を添える。</param>
+    internal sealed record Entry(string InternalName, string Title, string Author, string Summary, string RepoUrl);
 
     /// <summary>推奨プラグインの一覧。</summary>
     internal static readonly Entry[] Entries =
     {
         new("DTROverlay",
             "DTROverlay",
+            "mirage",
             "サーバー情報バー (DTR) の見た目を自由に変えられます。"
           + "Masked Dalamud と併用すると、DTR の表示を配信から隠せるようになります。",
             "https://raw.githubusercontent.com/exatrines/DalamudPlugins/refs/heads/main/pluginmaster.json"),
